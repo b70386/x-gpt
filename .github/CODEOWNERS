@@ -3,3 +3,6 @@
 
 # Perubahan pada script inti wajib review ketat
 /xgpt.py @b70386
+
+# File dokumentasi free tier wajib review ketat
+/FREE_TIER_MODELS.md @b70386
