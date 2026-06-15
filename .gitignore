@@ -1,0 +1,14 @@
+.env
+*.env
+prompt.md
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+backup/
+.DS_Store
+Thumbs.db
+desktop.ini
