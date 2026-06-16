@@ -76,11 +76,12 @@ Never lose your coding sessions or important AI insights again. X-GPT automatica
 X-GPT is built for a global community. The entire terminal interface—including menus, prompts, error messages, and system notifications—supports seamless switching between **English** and **Indonesian**. 
 This isn't just a translation layer; it's a core feature designed to make AI access more inclusive and comfortable for native speakers of both languages. You can switch languages instantly from the main menu without restarting the application.
 
+
 ### 🎥 See It In Action
 Watch how X-GPT handles bilingual queries and model switching in real-time:
 
-[![X-GPT Bilingual Demo](https://img.youtube.com/vi/01ksjiA4tuE/maxresdefault.jpg)](https://www.youtube.com/watch?v=01ksjiA4tuE)
-*(Click the image above to watch the full demo on YouTube)*
+👉 **[Watch the Full Demo on YouTube](https://www.youtube.com/watch?v=01ksjiA4tuE)**
+
 
 ---
 
