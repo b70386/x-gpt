@@ -36,6 +36,7 @@ X-GPT implements a deterministic routing system based on model ID patterns—no 
 | `gpt-*`, `o1-*`, `o3-*` | OpenAI | `api.openai.com/v1` |
 | `llama-*groq*` | Groq | `api.groq.com/openai/v1` |
 | `*/model:free`, `provider/model` | OpenRouter | `openrouter.ai/api/v1` |
+| `*/model:flash`, `provider/model` | OpenRouter | `openrouter.ai/api/v1` |
 | Custom endpoint | User-defined | Configurable |
 
 The routing logic is fully documented in `resolve_provider()` with explicit rules—no black-box behavior.
@@ -53,12 +54,33 @@ When facing 429 (Too Many Requests) errors on free-tier models:
 3.  **Transparent Feedback:** Clearly informs users when primary models are limited and when fallbacks are activated.
 4.  **Capped Retries:** Prevents infinite loops and respects server resources with maximum retry limits.
 
+### 💾 Automatic Chat History Persistence
+Never lose your coding sessions or important AI insights again. X-GPT automatically saves every interaction to a structured `chat_history.json` file in array format.
+
+-   **Zero Configuration:** Saving is enabled by default; no extra setup required.
+-   **Structured Data:** Each entry includes timestamp, active model, user query, and full AI response for easy parsing or future RAG integration.
+-   **Safe Exit Handling:** History is atomically written when you type `exit`, return to `menu`, or press `Ctrl+C`, preventing data loss during interruptions.
+-   **Privacy First:** The history file is strictly local and excluded from Git via `.gitignore`. Your conversations never leave your machine unless you explicitly share them.
+
+> 💡 **Tip:** Use the saved JSON array to build personal knowledge bases, analyze your most frequent queries, or feed context back into future sessions programmatically.
+
 ### 🎨 Professional Terminal Experience
 -   Gradient ASCII banner via Pyfiglet (optional dependency)
 -   Typing animation with configurable delay
 -   Language auto-detection (English, Indonesian)
 -   Persistent saved models list with `/models` slash command
 -   Clean error messages with actionable guidance
+
+### 🌍 Bilingual Support (English & Indonesian)
+
+X-GPT is built for a global community. The entire terminal interface—including menus, prompts, error messages, and system notifications—supports seamless switching between **English** and **Indonesian**. 
+This isn't just a translation layer; it's a core feature designed to make AI access more inclusive and comfortable for native speakers of both languages. You can switch languages instantly from the main menu without restarting the application.
+
+### 🎥 See It In Action
+Watch how X-GPT handles bilingual queries and model switching in real-time:
+
+[![X-GPT Bilingual Demo](https://img.youtube.com/vi/01ksjiA4tuE/maxresdefault.jpg)](https://www.youtube.com/watch?v=01ksjiA4tuE)
+*(Click the image above to watch the full demo on YouTube)*
 
 ---
 

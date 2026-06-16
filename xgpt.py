@@ -10,8 +10,8 @@ Features:
 - Secure multi-key management via .env (no hardcoded secrets)
 - Clean terminal UI with gradient ASCII banner
 - Persistent local configuration for models & preferences
-- Static Fallback Chain for rate-limited free tier models
-- Respect for Retry-After headers (OpenRouter standard)
+- Bilingual support (English / Indonesian) via i18n module
+- Ethical rate-limit handling with static fallback chain
 
 Author: b70386
 License: MIT
@@ -20,12 +20,14 @@ Repository: https://github.com/b70386/x-gpt
 
 import sys
 import os
+import shutil
 import platform
 import time
 import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+from i18n import t  # CRITICAL: Import translation function
 
 # Load environment variables immediately
 load_dotenv()
@@ -45,7 +47,6 @@ DEFAULT_MODEL = os.getenv("XGPT_DEFAULT_MODEL", "qwen/qwen3-coder:free")
 DEFAULT_LANGUAGE = os.getenv("XGPT_LANGUAGE", "English")
 
 # Static Fallback Chain for Free Tier Models (Ordered by stability)
-# If primary model fails with 429/503, X-GPT will try these in order.
 FALLBACK_CHAIN = [
     "qwen/qwen3-coder:free",
     "deepseek/deepseek-chat:free",
@@ -92,6 +93,30 @@ PROVIDER_REGISTRY = {
     }
 }
 
+# ============================================================================
+# CHAT HISTORY MANAGEMENT
+# ============================================================================
+
+CHAT_HISTORY_FILE = "chat_history.json"
+
+def save_chat_history(history: list) -> None:
+    """Persist chat history to JSON file atomically."""
+    try:
+        with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"{Colors.RED}Warning: Could not save chat history: {e}{Colors.RESET}")
+
+def load_chat_history() -> list:
+    """Load existing chat history or return empty list."""
+    if os.path.exists(CHAT_HISTORY_FILE):
+        try:
+            with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
 
 # ============================================================================
 # TERMINAL STYLING
@@ -120,6 +145,18 @@ class Colors:
     BOLD = "\033[1m"
 
 
+def center_text(text: str) -> str:
+    """Center text based on terminal width (preserves ANSI codes)."""
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+        # Calculate visible length by stripping ANSI codes
+        clean_len = len(''.join([c for c in text if ord(c) > 31 or c == ' ']))
+        padding = max(0, (terminal_width - clean_len) // 2)
+        return ' ' * padding + text
+    except Exception:
+        return text
+
+
 def typing_print(text: str, delay: float = 0.02) -> None:
     """Simulate typewriter effect for AI responses."""
     for char in text:
@@ -137,7 +174,7 @@ def clear_screen() -> None:
 def mask_key(key: str) -> str:
     """Mask API key for safe display (show first 8 + last 4 chars)."""
     if not key:
-        return f"{Colors.GREEN}Not set{Colors.RESET}"
+        return f"{Colors.GREEN}{t('api_key_not_set')}{Colors.RESET}"
     if len(key) > 12:
         return f"{Colors.GREEN}{key[:8]}...{key[-4:]}{Colors.RESET}"
     return f"{Colors.GREEN}{'*' * len(key)}{Colors.RESET}"
@@ -149,7 +186,6 @@ def mask_key(key: str) -> str:
 
 def save_config(config: dict) -> None:
     """Persist non-sensitive configuration to JSON file."""
-    # Never save API keys to config file if they came from .env
     safe_config = {k: v for k, v in config.items() if k != "api_keys"}
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(safe_config, f, indent=2)
@@ -157,26 +193,22 @@ def save_config(config: dict) -> None:
 
 def load_config() -> dict:
     """Load config: JSON takes precedence for user preferences."""
-    
-    # Start with defaults (only fallback)
     saved_models = [DEFAULT_MODEL]
     language = DEFAULT_LANGUAGE
     provider_urls = {}
     model = DEFAULT_MODEL
     
-    # Load persistent preferences from JSON (THIS TAKES PRECEDENCE)
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             
-            # User's saved preferences override defaults
             if "saved_models" in loaded and loaded["saved_models"]:
                 saved_models = loaded["saved_models"]
             if "language" in loaded:
                 language = loaded["language"]
             if "model" in loaded and loaded["model"]:
-                model = loaded["model"]  # <-- CRITICAL FIX: Use JSON value
+                model = loaded["model"]
             if "provider_urls" in loaded:
                 provider_urls = loaded["provider_urls"]
             
@@ -193,7 +225,6 @@ def load_config() -> dict:
         except Exception:
             pass
 
-    # .env ONLY for API keys (never for model/language preferences)
     api_keys = {}
     env_mappings = {
         "openrouter": "XGPT_OPENROUTER_KEY",
@@ -219,10 +250,17 @@ def load_config() -> dict:
     return {
         "api_keys": api_keys,
         "provider_urls": provider_urls,
-        "model": model,          # <-- Now correctly uses JSON value
-        "language": language,     # <-- Now correctly uses JSON value
+        "model": model,
+        "language": language,
         "saved_models": saved_models
     }
+
+
+def get_language_code() -> str:
+    """Return language code for i18n: 'id' for Indonesian, 'en' for English."""
+    config = load_config()
+    lang = config.get("language", "English")
+    return "id" if lang == "Indonesian" else "en"
 
 
 # ============================================================================
@@ -230,33 +268,33 @@ def load_config() -> dict:
 # ============================================================================
 
 def banner() -> None:
-    """Display the X-GPT branded banner with gradient ASCII art."""
+    """Display the X-GPT branded banner with gradient ASCII art (centered)."""
     try:
         import pyfiglet
         figlet = pyfiglet.Figlet(font="big")
         art = figlet.renderText('X-GPT')
         lines = art.split('\n')
-        mid = len(lines) // 2
+        mid = len(lines) // 1
 
         for i, line in enumerate(lines):
             if not line.strip():
-                print(line)
+                print(center_text(line))
             elif i < mid:
-                print(f"{Colors.BRIGHT_GREEN}{line}{Colors.RESET}")
+                print(center_text(f"{Colors.BRIGHT_GREEN}{line}{Colors.RESET}"))
             else:
-                print(f"{Colors.BRIGHT_ORANGE}{line}{Colors.RESET}")
+                print(center_text(f"{Colors.BRIGHT_ORANGE}{line}{Colors.RESET}"))
     except ImportError:
-        print(f"{Colors.BRIGHT_GREEN}X-GPT{Colors.BRIGHT_ORANGE}>{Colors.RESET}")
+        print(center_text(f"{Colors.BRIGHT_GREEN}X-GPT{Colors.BRIGHT_ORANGE}>{Colors.RESET}"))
 
-    print(f"{Colors.BRIGHT_ORANGE}X-GPT CLI - Multi Provider Edition & Cloud AI Wrapper{Colors.RESET}")
-    print(f"{Colors.BRIGHT_CYAN}OpenRouter | DeepSeek | OpenAI | Groq | Custom{Colors.RESET}")
-    print(f"{Colors.BRIGHT_CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}")
+    lang = get_language_code()
+    print(center_text(f"{Colors.BRIGHT_ORANGE}{t('banner_title', lang)}{Colors.RESET}"))
+    print(center_text(f"{Colors.BRIGHT_CYAN}{t('banner_providers', lang)}{Colors.RESET}"))
+    print(center_text(f"{Colors.BRIGHT_CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}"))
 
 
 def get_system_prompt() -> str:
     """Load system prompt from file or create default."""
     default_prompt = "You are X-GPT, an AI assistant."
-
     if not os.path.exists(PROMPT_FILE):
         try:
             with open(PROMPT_FILE, "w", encoding="utf-8") as f:
@@ -270,7 +308,8 @@ def get_system_prompt() -> str:
             content = f.read().strip()
             return content if content else default_prompt
     except Exception as e:
-        print(f"{Colors.RED}Warning: Could not read {PROMPT_FILE}: {e}{Colors.RESET}")
+        lang = get_language_code()
+        print(f"{Colors.RED}{t('warning_prompt_read', lang).format(PROMPT_FILE, e)}{Colors.RESET}")
         return default_prompt
 
 
@@ -279,45 +318,27 @@ def get_system_prompt() -> str:
 # ============================================================================
 
 def resolve_provider(model: str) -> tuple:
-    """
-    Automatically determine the correct provider, URL, and API key
-    based on the model ID string.
-
-    Returns: (provider_key, base_url, api_key) or (None, None, None)
-    """
+    """Determine correct provider, URL, and API key based on model ID."""
     config = load_config()
     api_keys = config.get("api_keys", {})
     provider_urls = config.get("provider_urls", {})
 
-    # Rule 1: DeepSeek official models
     if model in ("deepseek-chat", "deepseek-reasoner", "deepseek-chat-v3", "deepseek-r1"):
         if api_keys.get("deepseek"):
-            return ("deepseek",
-                    provider_urls.get("deepseek", "https://api.deepseek.com"),
-                    api_keys["deepseek"])
+            return ("deepseek", provider_urls.get("deepseek", "https://api.deepseek.com"), api_keys["deepseek"])
 
-    # Rule 2: OpenAI official models
     if model.startswith(("gpt-", "o1-", "o3-")):
         if api_keys.get("openai"):
-            return ("openai",
-                    provider_urls.get("openai", "https://api.openai.com/v1"),
-                    api_keys["openai"])
+            return ("openai", provider_urls.get("openai", "https://api.openai.com/v1"), api_keys["openai"])
 
-    # Rule 3: Groq models
     if model.startswith("llama-") and "groq" in model:
         if api_keys.get("groq"):
-            return ("groq",
-                    provider_urls.get("groq", "https://api.groq.com/openai/v1"),
-                    api_keys["groq"])
+            return ("groq", provider_urls.get("groq", "https://api.groq.com/openai/v1"), api_keys["groq"])
 
-    # Rule 4: OpenRouter models (contains '/' or ':free')
     if "/" in model or ":free" in model:
         if api_keys.get("openrouter"):
-            return ("openrouter",
-                    provider_urls.get("openrouter", "https://openrouter.ai/api/v1"),
-                    api_keys["openrouter"])
+            return ("openrouter", provider_urls.get("openrouter", "https://openrouter.ai/api/v1"), api_keys["openrouter"])
 
-    # Rule 5: Fallback - use first available configured provider
     for provider_key, key_value in api_keys.items():
         if key_value:
             url = provider_urls.get(provider_key, "")
@@ -335,43 +356,33 @@ def resolve_provider(model: str) -> tuple:
 # ============================================================================
 
 def call_api(user_input: str, retry_count: int = 0, fallback_index: int = 0) -> str:
-    """
-    Send chat request with intelligent error handling:
-    1. Respects Retry-After header for 429/503 errors.
-    2. Uses Static Fallback Chain if primary model is rate-limited.
-    3. Limits retries to prevent infinite loops.
-    """
+    """Send chat request with intelligent error handling and fallback chain."""
     config = load_config()
+    lang = get_language_code()
     
-    # Determine current model to use
     if fallback_index == 0:
         model = config["model"]
     else:
-        # Use model from fallback chain
         if fallback_index < len(FALLBACK_CHAIN):
             model = FALLBACK_CHAIN[fallback_index]
         else:
-            return f"{Colors.RED}[X-GPT] All fallback models exhausted. Please try again later.{Colors.RESET}"
+            return f"{Colors.RED}[X-GPT] {t('chat_all_limited', lang)}{Colors.RESET}"
 
-    # Resolve provider for the current model
     provider_key, base_url, api_key = resolve_provider(model)
 
     if not provider_key:
         if fallback_index == 0:
-            return (f"{Colors.RED}[X-GPT] Error: No API key configured for model '{model}'.\n"
-                    f"Please go to Menu 3 (Set API Key) and add a key for the appropriate provider.{Colors.RESET}")
+            return (f"{Colors.RED}[X-GPT] {t('chat_error_no_key', lang).format(model)}\n"
+                    f"{t('chat_error_no_key_hint', lang)}{Colors.RESET}")
         else:
-            # If fallback model has no key, try next fallback
             return call_api(user_input, retry_count, fallback_index + 1)
 
-    # Build request payload
     clean_url = base_url.strip().rstrip('/')
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
-    # OpenRouter requires attribution headers
     if provider_key == "openrouter":
         headers["HTTP-Referer"] = SITE_URL
         headers["X-Title"] = SITE_NAME
@@ -386,11 +397,10 @@ def call_api(user_input: str, retry_count: int = 0, fallback_index: int = 0) -> 
         "temperature": 0.7
     }
 
-    # Display routing info (only show on first attempt or when switching fallbacks)
     if retry_count == 0 and fallback_index == 0:
-        print(f"{Colors.BRIGHT_BLACK}  → Routing: {provider_key.upper()} | {clean_url}{Colors.RESET}")
+        print(f"{Colors.BRIGHT_BLACK}  {t('chat_routing', lang)}: {provider_key.upper()} | {clean_url}{Colors.RESET}")
     elif fallback_index > 0:
-        print(f"{Colors.YELLOW}  → Fallback {fallback_index}: Using {model} via {provider_key.upper()}{Colors.RESET}")
+        print(f"{Colors.YELLOW}  {t('chat_fallback', lang).format(fallback_index, model, provider_key.upper())}{Colors.RESET}")
 
     try:
         response = requests.post(
@@ -400,76 +410,67 @@ def call_api(user_input: str, retry_count: int = 0, fallback_index: int = 0) -> 
             timeout=120
         )
         
-        # Check for empty response
         if response.status_code == 200:
             try:
                 content = response.json()['choices'][0]['message']['content']
                 if not content or content.strip() == "":
                     raise Exception("Empty content from model")
                 return content
-            except (KeyError, IndexError, Exception) as e:
+            except (KeyError, IndexError, Exception):
                 if retry_count < 2:
-                    print(f"{Colors.YELLOW}[X-GPT] Empty response. Retrying...{Colors.RESET}")
+                    print(f"{Colors.YELLOW}[X-GPT] {t('chat_empty_retry', lang)}{Colors.RESET}")
                     time.sleep(2)
                     return call_api(user_input, retry_count + 1, fallback_index)
-                return f"{Colors.RED}[X-GPT] Model returned empty response after retries.{Colors.RESET}"
+                return f"{Colors.RED}[X-GPT] {t('chat_empty_final', lang)}{Colors.RESET}"
 
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content']
 
-    except requests.exceptions.HTTPError as e:
+    except requests.exceptions.HTTPError:
         status_code = response.status_code
         
-        # Handle Rate Limiting (429) & Service Unavailable (503) per OpenRouter docs
         if status_code in (429, 503):
-            # Respect Retry-After header
             retry_after = response.headers.get("Retry-After")
             wait_time = int(retry_after) if retry_after and retry_after.isdigit() else 10
-            
-            # Cap wait time to 60 seconds max
             wait_time = min(wait_time, 60)
             
             if retry_count < 2:
-                print(f"{Colors.YELLOW}[X-GPT] Rate limited ({status_code}). Waiting {wait_time}s (per Retry-After)...{Colors.RESET}")
+                print(f"{Colors.YELLOW}[X-GPT] {t('chat_rate_limited', lang).format(status_code, wait_time)}{Colors.RESET}")
                 time.sleep(wait_time)
                 return call_api(user_input, retry_count + 1, fallback_index)
             else:
-                # After retries exhausted, try fallback chain
                 if fallback_index < len(FALLBACK_CHAIN) - 1:
                     print(f"{Colors.YELLOW}[X-GPT] Primary model still limited. Switching to fallback...{Colors.RESET}")
                     return call_api(user_input, 0, fallback_index + 1)
                 else:
-                    return f"{Colors.RED}[X-GPT] All models currently rate limited. Please try again in a few minutes.{Colors.RESET}"
+                    return f"{Colors.RED}[X-GPT] {t('chat_all_limited', lang)}{Colors.RESET}"
         
-        # Handle other HTTP errors
-        error_body = response.text[:200] if response else str(e)
+        error_body = response.text[:200] if response else str(response)
         
-        # Specific error messages
         if status_code == 401:
-            return f"{Colors.RED}[X-GPT] Invalid API Key for {provider_key}. Please update it in Menu 3.{Colors.RESET}"
+            return f"{Colors.RED}[X-GPT] {t('chat_error_401', lang).format(provider_key)}{Colors.RESET}"
         elif status_code == 402:
-            return f"{Colors.RED}[X-GPT] Insufficient credits for {provider_key}.{Colors.RESET}"
+            return f"{Colors.RED}[X-GPT] {t('chat_error_402', lang).format(provider_key)}{Colors.RESET}"
         elif status_code == 403:
-            return f"{Colors.RED}[X-GPT] Request blocked by guardrails/moderation.{Colors.RESET}"
+            return f"{Colors.RED}[X-GPT] {t('chat_error_403', lang)}{Colors.RESET}"
         elif status_code == 404:
-            return f"{Colors.RED}[X-GPT] Model '{model}' not found. Please check the model ID.{Colors.RESET}"
+            return f"{Colors.RED}[X-GPT] {t('chat_error_404', lang).format(model)}{Colors.RESET}"
         
-        return (f"{Colors.RED}[X-GPT] HTTP {status_code} ({provider_key}): "
-                f"{error_body}{Colors.RESET}")
+        return (f"{Colors.RED}[X-GPT] {t('chat_error_generic', lang).format(status_code, provider_key, error_body)}{Colors.RESET}")
                 
     except requests.exceptions.Timeout:
         if retry_count < 2:
-            print(f"{Colors.YELLOW}[X-GPT] Request timed out. Retrying...{Colors.RESET}")
+            print(f"{Colors.YELLOW}[X-GPT] {t('chat_timeout_retry', lang)}{Colors.RESET}")
             time.sleep(3)
             return call_api(user_input, retry_count + 1, fallback_index)
-        return f"{Colors.RED}[X-GPT] Request timeout after multiple attempts.{Colors.RESET}"
+        return f"{Colors.RED}[X-GPT] {t('chat_timeout_final', lang)}{Colors.RESET}"
         
     except Exception as e:
-        return f"{Colors.RED}[X-GPT] Error: {str(e)}{Colors.RESET}"
+        return f"{Colors.RED}[X-GPT] {t('chat_error_unknown', lang).format(str(e))}{Colors.RESET}"
 
 
 # ============================================================================
-# MENU SYSTEM
+# MENU SYSTEM (No centering - left aligned)
 # ============================================================================
 
 def select_language() -> None:
@@ -477,25 +478,26 @@ def select_language() -> None:
     config = load_config()
     clear_screen()
     banner()
+    lang = get_language_code()
 
-    print(f"\n{Colors.BRIGHT_CYAN}[ Language Selection ]{Colors.RESET}")
-    print(f"{Colors.YELLOW}Current: {Colors.GREEN}{config['language']}{Colors.RESET}\n")
+    print(f"\n{Colors.BRIGHT_CYAN}{t('lang_select_title', lang)}{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('lang_current', lang)}: {Colors.GREEN}{config['language']}{Colors.RESET}\n")
 
-    for idx, lang in enumerate(SUPPORTED_LANGUAGES, 1):
-        print(f"{Colors.GREEN}{idx}. {lang}{Colors.RESET}")
+    for idx, l in enumerate(SUPPORTED_LANGUAGES, 1):
+        print(f"{Colors.GREEN}{idx}. {l}{Colors.RESET}")
 
     while True:
         try:
-            choice = int(input(f"\n{Colors.GREEN}[>] Select (1-{len(SUPPORTED_LANGUAGES)}): {Colors.RESET}"))
+            choice = int(input(f"\n{Colors.GREEN}{t('prompt_select', lang)} (1-{len(SUPPORTED_LANGUAGES)}): {Colors.RESET}"))
             if 1 <= choice <= len(SUPPORTED_LANGUAGES):
                 config["language"] = SUPPORTED_LANGUAGES[choice - 1]
                 save_config(config)
-                print(f"{Colors.BRIGHT_CYAN}Language set to {SUPPORTED_LANGUAGES[choice - 1]}{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}{t('lang_set_success', lang)} {SUPPORTED_LANGUAGES[choice - 1]}{Colors.RESET}")
                 time.sleep(1)
                 return
-            print(f"{Colors.RED}Invalid selection!{Colors.RESET}")
+            print(f"{Colors.RED}{t('error_invalid', lang)}{Colors.RESET}")
         except ValueError:
-            print(f"{Colors.RED}Please enter a number{Colors.RESET}")
+            print(f"{Colors.RED}{t('error_number', lang)}{Colors.RESET}")
 
 
 def select_model() -> None:
@@ -503,60 +505,58 @@ def select_model() -> None:
     config = load_config()
     clear_screen()
     banner()
+    lang = get_language_code()
 
-    print(f"\n{Colors.BRIGHT_CYAN}[ Model Configuration ]{Colors.RESET}")
-    print(f"{Colors.YELLOW}Current Active: {Colors.GREEN}{config['model']}{Colors.RESET}\n")
-    print(f"{Colors.YELLOW}1. Enter new custom model ID{Colors.RESET}")
-    print(f"{Colors.YELLOW}2. Switch from Saved Models list{Colors.RESET}")
-    print(f"{Colors.YELLOW}3. Back to menu{Colors.RESET}")
+    print(f"\n{Colors.BRIGHT_CYAN}{t('model_config_title', lang)}{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('model_active', lang)}: {Colors.GREEN}{config['model']}{Colors.RESET}\n")
+    print(f"{Colors.YELLOW}1. {t('model_opt_new', lang)}{Colors.RESET}")
+    print(f"{Colors.YELLOW}2. {t('model_opt_list', lang)}{Colors.RESET}")
+    print(f"{Colors.YELLOW}3. {t('model_opt_back', lang)}{Colors.RESET}")
 
     while True:
-        choice = input(f"\n{Colors.GREEN}[>] Select (1-3): {Colors.RESET}").strip()
+        choice = input(f"\n{Colors.GREEN}{t('prompt_select', lang)} (1-3): {Colors.RESET}").strip()
 
         if choice == "1":
-            new_model = input(f"{Colors.GREEN}Enter model ID: {Colors.RESET}").strip()
+            new_model = input(f"{Colors.GREEN}{t('model_enter_id', lang)}: {Colors.RESET}").strip()
             if new_model:
                 config["model"] = new_model
                 if new_model not in config["saved_models"]:
                     config["saved_models"].append(new_model)
                 save_config(config)
-                print(f"{Colors.BRIGHT_CYAN}Model updated and saved!{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}{t('model_saved', lang)}{Colors.RESET}")
                 time.sleep(1)
                 return
 
         elif choice == "2":
-            # Reload fresh config before displaying
             config = load_config() 
             
             if not config.get("saved_models"):
-                print(f"{Colors.RED}No saved models yet!{Colors.RESET}")
+                print(f"{Colors.RED}{t('model_no_saved', lang)}{Colors.RESET}")
                 time.sleep(1)
                 continue
 
-            print(f"\n{Colors.BRIGHT_CYAN}Available Models:{Colors.RESET}")
+            print(f"\n{Colors.BRIGHT_CYAN}{t('model_available', lang)}:{Colors.RESET}")
             for i, m in enumerate(config["saved_models"], 1):
                 marker = " [ACTIVE]" if m == config["model"] else ""
                 print(f"{Colors.GREEN}{i}. {m}{Colors.YELLOW}{marker}{Colors.RESET}")
 
-            sel = input(f"\n{Colors.GREEN}Enter number to switch (or 0 to cancel): {Colors.RESET}").strip()
+            sel = input(f"\n{Colors.GREEN}{t('model_switch_prompt', lang)}: {Colors.RESET}").strip()
             try:
                 idx = int(sel)
                 if 1 <= idx <= len(config["saved_models"]):
                     selected = config["saved_models"][idx - 1]
                     
-                    # Direct update + Save
                     config["model"] = selected
                     save_config(config)
                     
-                    # Verification step
                     verified = load_config()
                     if verified["model"] == selected:
                         pk, bu, _ = resolve_provider(selected)
-                        print(f"{Colors.BRIGHT_CYAN}Switched to {selected}{Colors.RESET}")
+                        print(f"{Colors.BRIGHT_CYAN}{t('model_switched', lang)} {selected}{Colors.RESET}")
                         print(f"{Colors.BRIGHT_BLACK}  → Provider: {pk.upper() if pk else 'NONE'} | {bu}{Colors.RESET}")
                     else:
-                        print(f"{Colors.RED}Failed to persist. Retrying...{Colors.RESET}")
-                        save_config(config)  # Retry once
+                        print(f"{Colors.RED}{t('model_failed_persist', lang)}{Colors.RESET}")
+                        save_config(config)
                         time.sleep(1)
                         
                     time.sleep(2)
@@ -567,7 +567,7 @@ def select_model() -> None:
         elif choice == "3":
             return
         else:
-            print(f"{Colors.RED}Invalid choice!{Colors.RESET}")
+            print(f"{Colors.RED}{t('error_choice', lang)}{Colors.RESET}")
 
 
 def set_api_key() -> None:
@@ -575,20 +575,19 @@ def set_api_key() -> None:
     config = load_config()
     clear_screen()
     banner()
+    lang = get_language_code()
 
-    print(f"\n{Colors.BRIGHT_CYAN}[ Multi-Provider API Key Configuration ]{Colors.RESET}")
-    print(f"{Colors.BRIGHT_YELLOW}Manage API keys for different AI providers{Colors.RESET}\n")
+    print(f"\n{Colors.BRIGHT_CYAN}{t('api_key_title', lang)}{Colors.RESET}")
+    print(f"{Colors.BRIGHT_YELLOW}{t('api_key_subtitle', lang)}{Colors.RESET}\n")
 
-    # Initialize dicts if missing
     config.setdefault("api_keys", {})
     config.setdefault("provider_urls", {})
 
-    # Display current keys status
-    print(f"{Colors.YELLOW}━━━ Current API Keys ━━━{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('api_key_header', lang)}{Colors.RESET}")
     for num, info in PROVIDER_REGISTRY.items():
         if info["key"]:
             key = config["api_keys"].get(info["key"], "")
-            status = mask_key(key) if key else f"{Colors.GREEN}Not set{Colors.RESET}"
+            status = mask_key(key) if key else f"{Colors.GREEN}{t('api_key_not_set', lang)}{Colors.RESET}"
             print(f"  {Colors.WHITE}{num}. {info['name']:15s}{Colors.RESET} : {status}")
         else:
             custom_keys = [k for k in config["api_keys"]
@@ -596,32 +595,32 @@ def set_api_key() -> None:
             if custom_keys:
                 for ck in custom_keys:
                     key = config["api_keys"].get(ck, "")
-                    status = mask_key(key) if key else f"{Colors.GREEN}Not set{Colors.RESET}"
+                    status = mask_key(key) if key else f"{Colors.GREEN}{t('api_key_not_set', lang)}{Colors.RESET}"
                     print(f"  {Colors.WHITE}   {ck.capitalize():15s}{Colors.RESET} : {status}")
             else:
-                print(f"  {Colors.WHITE}{num}. Custom Provider{Colors.RESET}    : {Colors.CYAN}Add new{Colors.RESET}")
+                print(f"  {Colors.WHITE}{num}. Custom Provider{Colors.RESET}    : {Colors.CYAN}{t('api_key_add_new', lang)}{Colors.RESET}")
 
-    print(f"\n  {Colors.WHITE}6. Delete a stored key{Colors.RESET}")
-    print(f"  {Colors.WHITE}7. Back to menu{Colors.RESET}")
+    print(f"\n  {Colors.WHITE}6. {t('api_key_delete', lang)}{Colors.RESET}")
+    print(f"  {Colors.WHITE}7. {t('api_key_back', lang)}{Colors.RESET}")
 
     while True:
-        choice = input(f"\n{Colors.GREEN}[>] Select option (1-7): {Colors.RESET}").strip()
+        choice = input(f"\n{Colors.GREEN}{t('prompt_option', lang)} (1-7): {Colors.RESET}").strip()
 
         if choice == "7":
             return
 
         if choice == "6":
             if not config["api_keys"]:
-                print(f"{Colors.RED}No keys stored to delete!{Colors.RESET}")
+                print(f"{Colors.RED}{t('api_key_no_keys', lang)}{Colors.RESET}")
                 time.sleep(1)
                 return set_api_key()
 
-            print(f"\n{Colors.YELLOW}Keys to delete:{Colors.RESET}")
+            print(f"\n{Colors.YELLOW}{t('api_key_to_delete', lang)}:{Colors.RESET}")
             keys_list = list(config["api_keys"].keys())
             for i, k in enumerate(keys_list, 1):
                 print(f"  {Colors.GREEN}{i}. {k.capitalize()}{Colors.RESET}")
 
-            sel = input(f"\n{Colors.GREEN}Enter number to delete (or 0 to cancel): {Colors.RESET}").strip()
+            sel = input(f"\n{Colors.GREEN}{t('api_key_delete_prompt', lang)}: {Colors.RESET}").strip()
             try:
                 idx = int(sel)
                 if 1 <= idx <= len(keys_list):
@@ -629,7 +628,7 @@ def set_api_key() -> None:
                     del config["api_keys"][deleted_key]
                     config["provider_urls"].pop(deleted_key, None)
                     save_config(config)
-                    print(f"{Colors.BRIGHT_CYAN}Key for '{deleted_key}' deleted!{Colors.RESET}")
+                    print(f"{Colors.BRIGHT_CYAN}{t('api_key_deleted', lang).format(deleted_key)}{Colors.RESET}")
                     time.sleep(1)
                     return set_api_key()
             except ValueError:
@@ -640,15 +639,14 @@ def set_api_key() -> None:
             provider_info = PROVIDER_REGISTRY[choice]
 
             if provider_info["key"] is None:
-                # Custom provider flow
-                custom_name = input(f"\n{Colors.GREEN}Enter custom provider name (e.g., 'lmstudio'): {Colors.RESET}").strip().lower()
+                custom_name = input(f"\n{Colors.GREEN}{t('api_key_custom_name', lang)}: {Colors.RESET}").strip().lower()
                 if not custom_name:
-                    print(f"{Colors.RED}Provider name cannot be empty!{Colors.RESET}")
+                    print(f"{Colors.RED}{t('api_key_empty_name', lang)}{Colors.RESET}")
                     continue
 
-                custom_url = input(f"{Colors.GREEN}Enter API Base URL (e.g., http://localhost:1234/v1): {Colors.RESET}").strip()
+                custom_url = input(f"{Colors.GREEN}{t('api_key_custom_url', lang)}: {Colors.RESET}").strip()
                 if not custom_url:
-                    print(f"{Colors.RED}Base URL cannot be empty!{Colors.RESET}")
+                    print(f"{Colors.RED}{t('api_key_empty_url', lang)}{Colors.RESET}")
                     continue
 
                 provider_key = custom_name
@@ -658,44 +656,47 @@ def set_api_key() -> None:
                 provider_key = provider_info["key"]
                 provider_display = provider_info["name"]
                 provider_url = provider_info["base_url"]
-                print(f"\n{Colors.BRIGHT_CYAN}ℹ {provider_info['hint']}{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_CYAN}{t('api_key_hint', lang)} {provider_info['hint']}{Colors.RESET}")
 
-            # Check for existing key
             existing = config["api_keys"].get(provider_key, "")
             if existing:
-                print(f"{Colors.YELLOW}Current key: {mask_key(existing)}{Colors.RESET}")
-                overwrite = input(f"{Colors.GREEN}Overwrite? (y/n): {Colors.RESET}").strip().lower()
+                print(f"{Colors.YELLOW}{t('api_key_current', lang)}: {mask_key(existing)}{Colors.RESET}")
+                overwrite = input(f"{Colors.GREEN}{t('api_key_overwrite', lang)}: {Colors.RESET}").strip().lower()
                 if overwrite != 'y':
                     continue
 
-            new_key = input(f"\n{Colors.GREEN}Enter {provider_display} API key: {Colors.RESET}").strip()
+            new_key = input(f"\n{Colors.GREEN}{t('api_key_enter', lang).format(provider_display)}: {Colors.RESET}").strip()
             if new_key:
                 config["api_keys"][provider_key] = new_key
                 config["provider_urls"][provider_key] = provider_url
                 save_config(config)
-                print(f"\n{Colors.BRIGHT_GREEN}✓ {provider_display} API key saved successfully!{Colors.RESET}")
-                print(f"{Colors.BRIGHT_CYAN}  Base URL: {provider_url}{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_GREEN}{t('api_key_saved', lang).format(provider_display)}{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}  {t('api_key_base_url', lang)}: {provider_url}{Colors.RESET}")
                 time.sleep(2)
                 return
             else:
-                print(f"{Colors.RED}API key cannot be empty!{Colors.RESET}")
+                print(f"{Colors.RED}{t('api_key_empty', lang)}{Colors.RESET}")
         else:
-            print(f"{Colors.RED}Invalid choice!{Colors.RESET}")
+            print(f"{Colors.RED}{t('error_choice', lang)}{Colors.RESET}")
 
 
 def chat_session() -> None:
-    """Main interactive chat loop with slash commands."""
+    """Main interactive chat loop with slash commands and auto-save history."""
     config = load_config()
     clear_screen()
     banner()
+    lang = config.get("language", "English").lower()[:2]
 
     provider_key, base_url, _ = resolve_provider(config["model"])
     provider_display = provider_key.upper() if provider_key else "NONE"
 
-    print(f"\n{Colors.BRIGHT_CYAN}[ Chat Session ]{Colors.RESET}")
-    print(f"{Colors.YELLOW}Model    : {Colors.GREEN}{config['model']}{Colors.RESET}")
-    print(f"{Colors.YELLOW}Provider : {Colors.BRIGHT_GREEN}{provider_display}{Colors.RESET}")
-    print(f"{Colors.YELLOW}Commands : {Colors.WHITE}'menu' | '/models' | 'clear' | 'exit'{Colors.RESET}\n")
+    # Load existing history
+    history = load_chat_history()
+
+    print(f"\n{Colors.BRIGHT_CYAN}{t('chat_title', lang)}{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('chat_model', lang)}    : {Colors.GREEN}{config['model']}{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('chat_provider', lang)} : {Colors.BRIGHT_GREEN}{provider_display}{Colors.RESET}")
+    print(f"{Colors.YELLOW}{t('chat_commands', lang)} : {Colors.WHITE}{t('chat_cmd_menu', lang)}{Colors.RESET}\n")
 
     while True:
         try:
@@ -706,70 +707,82 @@ def chat_session() -> None:
 
             # Command handlers
             if user_input.lower() == "exit":
-                print(f"{Colors.BRIGHT_CYAN}Exiting...{Colors.RESET}")
+                # Save history before exiting
+                save_chat_history(history)
+                print(f"{Colors.BRIGHT_CYAN}{t('chat_exiting', lang)}{Colors.RESET}")
                 sys.exit(0)
-
             elif user_input.lower() == "menu":
+                # Save history before returning to menu
+                save_chat_history(history)
                 return
-
             elif user_input.lower() == "clear":
                 clear_screen()
                 banner()
-                print(f"\n{Colors.BRIGHT_CYAN}[ Chat Session ]{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_CYAN}{t('chat_title', lang)}{Colors.RESET}")
                 continue
-
             elif user_input.lower() == "/models":
-                print(f"\n{Colors.BRIGHT_CYAN}--- Saved Models ---{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_CYAN}{t('chat_models_title', lang)}{Colors.RESET}")
                 for i, m in enumerate(config["saved_models"], 1):
-                    marker = f" {Colors.GREEN}<< ACTIVE{Colors.RESET}" if m == config["model"] else ""
+                    marker = f" {Colors.GREEN}{t('chat_models_active', lang)}{Colors.RESET}" if m == config["model"] else ""
                     print(f"  {Colors.YELLOW}{i}. {m}{marker}{Colors.RESET}")
                 print(f"{Colors.BRIGHT_CYAN}--------------------{Colors.RESET}")
 
-                sel = input(f"{Colors.GREEN}Type number to switch (or press Enter to cancel): {Colors.RESET}").strip()
+                sel = input(f"{Colors.GREEN}{t('chat_models_switch', lang)}: {Colors.RESET}").strip()
                 try:
                     idx = int(sel)
                     if 1 <= idx <= len(config["saved_models"]):
                         config["model"] = config["saved_models"][idx - 1]
                         save_config(config)
-                        print(f"{Colors.BRIGHT_CYAN}Switched to {config['model']}{Colors.RESET}")
+                        print(f"{Colors.BRIGHT_CYAN}{t('model_switched', lang)} {config['model']}{Colors.RESET}")
                         pk, bu, _ = resolve_provider(config["model"])
                         print(f"{Colors.BRIGHT_BLACK}  → Provider: {pk.upper() if pk else 'NONE'} | {bu}{Colors.RESET}")
                 except ValueError:
                     pass
                 continue
 
-            # Send to API with automatic fallback handling
+            # Send to API
             response = call_api(user_input)
             if response:
-                print(f"\n{Colors.BRIGHT_CYAN}Response:{Colors.RESET}\n{Colors.WHITE}", end="")
+                # Append to history array
+                history.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "model": config["model"],
+                    "user": user_input,
+                    "assistant": response
+                })
+                
+                print(f"\n{Colors.BRIGHT_CYAN}{t('chat_response', lang)}:{Colors.RESET}\n{Colors.WHITE}", end="")
                 typing_print(response)
 
         except KeyboardInterrupt:
-            print(f"\n{Colors.RED}Interrupted!{Colors.RESET}")
+            # Save history on interrupt
+            save_chat_history(history)
+            print(f"\n{Colors.RED}{t('chat_interrupted', lang)}{Colors.RESET}")
             return
         except Exception as e:
-            print(f"\n{Colors.RED}Error: {e}{Colors.RESET}")
+            print(f"\n{Colors.RED}{t('chat_error_unknown', lang).format(str(e))}{Colors.RESET}")
 
 
 def main_menu() -> None:
-    """Main application menu loop."""
+    """Main application menu loop (left aligned, no centering)."""
     while True:
         config = load_config()
         clear_screen()
         banner()
+        lang = get_language_code()
 
         api_keys = config.get("api_keys", {})
         configured_count = sum(1 for v in api_keys.values() if v)
 
-        print(f"\n{Colors.BRIGHT_CYAN}[ Main Menu ]{Colors.RESET}")
-        print(f"{Colors.YELLOW}1. Language  : {Colors.GREEN}{config['language']}{Colors.RESET}")
-        print(f"{Colors.YELLOW}2. Model     : {Colors.GREEN}{config['model']}{Colors.RESET}")
-        print(f"{Colors.YELLOW}3. API Keys  : {Colors.GREEN}{configured_count} provider(s) configured{Colors.RESET}")
-        print(f"{Colors.YELLOW}4. Start Chat{Colors.RESET}")
-        print(f"{Colors.YELLOW}5. Exit{Colors.RESET}")
+        print(f"\n{Colors.BRIGHT_CYAN}{t('main_menu_title', lang)}{Colors.RESET}")
+        print(f"{Colors.YELLOW}1. {t('opt_language', lang)}  : {Colors.GREEN}{config['language']}{Colors.RESET}")
+        print(f"{Colors.YELLOW}2. {t('opt_model', lang)}     : {Colors.GREEN}{config['model']}{Colors.RESET}")
+        print(f"{Colors.YELLOW}3. {t('opt_api_keys', lang)}  : {Colors.GREEN}{configured_count} {t('providers_configured', lang)}{Colors.RESET}")
+        print(f"{Colors.YELLOW}4. {t('opt_start_chat', lang)}{Colors.RESET}")
+        print(f"{Colors.YELLOW}5. {t('opt_exit', lang)}{Colors.RESET}")
 
         try:
-            choice = input(f"\n{Colors.GREEN}[>] Select (1-5): {Colors.RESET}").strip()
+            choice = input(f"\n{Colors.GREEN}{t('prompt_select', lang)} (1-5): {Colors.RESET}").strip()
 
             actions = {
                 "1": select_language,
@@ -779,19 +792,19 @@ def main_menu() -> None:
             }
 
             if choice == "5":
-                print(f"{Colors.BRIGHT_CYAN}Exiting...{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}{t('chat_exiting', lang)}{Colors.RESET}")
                 sys.exit(0)
             elif choice in actions:
                 actions[choice]()
             else:
-                print(f"{Colors.RED}Invalid selection!{Colors.RESET}")
+                print(f"{Colors.RED}{t('error_invalid', lang)}{Colors.RESET}")
                 time.sleep(1)
 
         except KeyboardInterrupt:
-            print(f"\n{Colors.RED}Interrupted!{Colors.RESET}")
+            print(f"\n{Colors.RED}{t('chat_interrupted', lang)}{Colors.RESET}")
             sys.exit(1)
         except Exception as e:
-            print(f"\n{Colors.RED}Error: {e}{Colors.RESET}")
+            print(f"\n{Colors.RED}{t('error_fatal', lang).format(str(e))}{Colors.RESET}")
             time.sleep(2)
 
 
@@ -801,22 +814,20 @@ def main_menu() -> None:
 
 def main() -> None:
     """Application entry point with dependency validation."""
-    # Validate required dependencies
     try:
         import pyfiglet
     except ImportError:
-        print(f"\n{Colors.RED}[ERROR] Missing dependency: pyfiglet{Colors.RESET}")
-        print(f"{Colors.YELLOW}Please run: pip install -r requirements.txt{Colors.RESET}\n")
+        print(f"\n{Colors.RED}{t('error_missing_dep').format('pyfiglet')}{Colors.RESET}")
+        print(f"{Colors.YELLOW}{t('error_install_req')}{Colors.RESET}\n")
         sys.exit(1)
 
     try:
         from langdetect import detect  # noqa: F811
     except ImportError:
-        print(f"\n{Colors.RED}[ERROR] Missing dependency: langdetect{Colors.RESET}")
-        print(f"{Colors.YELLOW}Please run: pip install -r requirements.txt{Colors.RESET}\n")
+        print(f"\n{Colors.RED}{t('error_missing_dep').format('langdetect')}{Colors.RESET}")
+        print(f"{Colors.YELLOW}{t('error_install_req')}{Colors.RESET}\n")
         sys.exit(1)
 
-    # Initialize config file if it doesn't exist
     if not os.path.exists(CONFIG_FILE):
         save_config(load_config())
 
@@ -824,9 +835,9 @@ def main() -> None:
         while True:
             main_menu()
     except KeyboardInterrupt:
-        print(f"\n{Colors.RED}Interrupted! Exiting...{Colors.RESET}")
+        print(f"\n{Colors.RED}{t('chat_interrupted')} Exiting...{Colors.RESET}")
     except Exception as e:
-        print(f"\n{Colors.RED}Fatal error: {e}{Colors.RESET}")
+        print(f"\n{Colors.RED}{t('error_fatal').format(str(e))}{Colors.RESET}")
         sys.exit(1)
 
 
